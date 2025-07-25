@@ -1,11 +1,11 @@
 import os
 import time
 import re
-from pytube import YouTube
+import yt_dlp
 
 def video_indir(url, indirme_yolu="./indirilmis_videolar"):
     """
-    YouTube'dan video indiren basit fonksiyon
+    YouTube'dan video indiren basit fonksiyon - yt-dlp kullanarak düşük kalitede indirme öncelikli
     
     Args:
         url (str): YouTube video URL'si
@@ -18,61 +18,64 @@ def video_indir(url, indirme_yolu="./indirilmis_videolar"):
         # İndirme klasörünü oluştur
         os.makedirs(indirme_yolu, exist_ok=True)
         
-        # URL'yi temizle - yaygın parametreleri kaldır
-        temiz_url = url.split('&')[0].split('?si=')[0]
-        print(f"Temizlenmiş URL: {temiz_url}")
+        print(f"Video URL'si: {url}")
         
-        # YouTube nesnesini oluştur - ek parametrelerle
-        print("YouTube nesnesine bağlanılıyor...")
-        yt = YouTube(
-            temiz_url,
-            use_oauth=False,
-            allow_oauth_cache=False
-        )
+        # yt-dlp seçenekleri - düşük kalite öncelikli
+        ydl_opts = {
+            'format': 'worst[ext=mp4]/worst',  # En düşük kalite mp4, yoksa en düşük kalite
+            'outtmpl': os.path.join(indirme_yolu, '%(title)s.%(ext)s'),  # Çıktı dosya formatı
+            'quiet': False,  # Detaylı çıktı
+            'no_warnings': False,
+            'extractaudio': False,  # Sadece video
+            'writeinfojson': False,  # Info dosyası yazma
+            'writethumbnail': False,  # Thumbnail yazma
+        }
         
-        # Biraz bekle - rate limiting için
-        time.sleep(1)
+        print("Video bilgileri alınıyor...")
         
-        print(f"Video bilgileri alınıyor...")
-        print(f"Video başlığı: {yt.title}")
-        print(f"Kanal: {yt.author}")
-        print(f"Süre: {yt.length} saniye")
+        # Video bilgilerini al
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            print(f"Video başlığı: {info.get('title', 'Bilinmiyor')}")
+            print(f"Kanal: {info.get('uploader', 'Bilinmiyor')}")
+            print(f"Süre: {info.get('duration', 0)} saniye")
+            print(f"Görüntülenme: {info.get('view_count', 0)}")
         
-        # Kullanılabilir stream'leri listele
-        print("Kullanılabilir stream'ler:")
-        for stream in yt.streams.filter(progressive=True, file_extension='mp4'):
-            print(f"  - {stream.resolution} ({stream.mime_type})")
+        print("Video indiriliyor (düşük kalite)...")
         
-        # Önce progressive mp4 stream'i dene
-        video_stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-        
-        if not video_stream:
-            # Eğer progressive bulunamazsa, en yüksek kaliteli adaptive stream'i al
-            print("Progressive stream bulunamadı, adaptive stream deneniyor...")
-            video_stream = yt.streams.filter(adaptive=True, file_extension='mp4').order_by('resolution').desc().first()
-        
-        if not video_stream:
-            # Son çare olarak herhangi bir video stream'i al
-            print("Adaptive stream bulunamadı, herhangi bir video stream'i deneniyor...")
-            video_stream = yt.streams.filter(only_video=True).first()
-        
-        if not video_stream:
-            raise Exception("Hiçbir video stream'i bulunamadı")
-        
-        print(f"Seçilen stream: {video_stream.resolution} - {video_stream.mime_type}")
-        
-        # Dosya ismini güvenli hale getir
-        guvenli_baslik = re.sub(r'[<>:"/\\|?*]', '_', yt.title)
-        
-        print("Video indiriliyor...")
         # Videoyu indir
-        indirilen_dosya = video_stream.download(
-            output_path=indirme_yolu,
-            filename=f"{guvenli_baslik}.{video_stream.subtype}"
-        )
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
         
-        print(f"Video başarıyla indirildi: {indirilen_dosya}")
-        return indirilen_dosya
+        # İndirilen dosyayı bul
+        # Dosya adını güvenli hale getir (yt-dlp otomatik yapar ama kontrol edelim)
+        guvenli_baslik = re.sub(r'[<>:"/\\|?*]', '_', info.get('title', 'video'))
+        
+        # Olası dosya uzantıları
+        olasi_uzantilar = ['.mp4', '.webm', '.mkv', '.flv']
+        indirilen_dosya = None
+        
+        for uzanti in olasi_uzantilar:
+            dosya_yolu = os.path.join(indirme_yolu, f"{guvenli_baslik}{uzanti}")
+            if os.path.exists(dosya_yolu):
+                indirilen_dosya = dosya_yolu
+                break
+        
+        # Eğer tam eşleşme bulunamazsa, klasördeki en son eklenen dosyayı bul
+        if not indirilen_dosya:
+            try:
+                dosyalar = [f for f in os.listdir(indirme_yolu) if os.path.isfile(os.path.join(indirme_yolu, f))]
+                if dosyalar:
+                    en_yeni_dosya = max(dosyalar, key=lambda x: os.path.getctime(os.path.join(indirme_yolu, x)))
+                    indirilen_dosya = os.path.join(indirme_yolu, en_yeni_dosya)
+            except:
+                pass
+        
+        if indirilen_dosya and os.path.exists(indirilen_dosya):
+            print(f"Video başarıyla indirildi: {indirilen_dosya}")
+            return indirilen_dosya
+        else:
+            raise Exception("İndirilen dosya bulunamadı")
         
     except Exception as e:
         hata_mesaji = f"Video indirme hatası: {str(e)}"
@@ -81,7 +84,8 @@ def video_indir(url, indirme_yolu="./indirilmis_videolar"):
         print("1. URL'nin doğru olduğundan emin olun")
         print("2. İnternet bağlantınızı kontrol edin")
         print("3. Video özel veya kısıtlı olabilir")
-        print("4. pytube kütüphanesini güncelleyin: pip install --upgrade pytube")
+        print("4. yt-dlp kütüphanesini yükleyin: pip install yt-dlp")
+        print("5. yt-dlp'yi güncelleyin: pip install --upgrade yt-dlp")
         return hata_mesaji
 
 # Kullanım örneği
