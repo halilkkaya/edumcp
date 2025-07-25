@@ -7,7 +7,7 @@ from fastmcp import FastMCP
 
 # Gerekli kütüphaneler
 import google.generativeai as genai
-from pytube import YouTube
+from yt import video_indir
 
 # 1. TEMEL KURULUM
 # -----------------------------------------------------------------------------
@@ -42,10 +42,10 @@ else:
 # -----------------------------------------------------------------------------
 # Bu en iyi pratiktir: Asıl işi yapan mantığı ayrı bir fonksiyona koymak,
 # tool'un kendisini test edilebilir ve yeniden kullanılabilir kılar.
-def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "") -> str:
+def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "", ozet_tipi: str = "kapsamli") -> str:
     """Video özetlemenin tüm çekirdek mantığını içeren, test edilebilir fonksiyon."""
     logging.info("Video özetleme işlemi başlatıldı")
-    logging.debug(f"Gelen parametreler - video_url: {video_url}, video_dosyasi_yolu: {video_dosyasi_yolu}")
+    logging.debug(f"Gelen parametreler - video_url: {video_url}, video_dosyasi_yolu: {video_dosyasi_yolu}, ozet_tipi: {ozet_tipi}")
     
     if not video_url and not video_dosyasi_yolu:
         logging.warning("Ne video URL'i ne de dosya yolu sağlanmadı")
@@ -60,60 +60,33 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "") -> 
             if "youtube.com" in video_url or "youtu.be" in video_url:
                 logging.info("YouTube videosu tespit edildi, indirme başlıyor...")
                 
-                # YouTube nesnesi oluşturma ve hata yönetimi
+                # video_indir fonksiyonunu kullanarak videoyu indir
                 try:
-                    yt = YouTube(video_url)
-                    # Önce video erişilebilirlik kontrolü yapalım
-                    video_title = yt.title  # Bu satır hata verirse video erişilemez
-                    video_length = yt.length
-                    logging.debug(f"Video başlığı: {video_title}")
-                    logging.debug(f"Video uzunluğu: {video_length} saniye")
-                except Exception as yt_error:
-                    logging.error(f"YouTube video erişim hatası: {str(yt_error)}")
-                    if "400" in str(yt_error):
-                        return json.dumps({"durum": "Hata", "mesaj": "Video erişilemiyor. Video yaş kısıtlamalı, özel veya bölgede engelli olabilir."}, ensure_ascii=False)
-                    elif "403" in str(yt_error):
-                        return json.dumps({"durum": "Hata", "mesaj": "Video erişim izni yok. Video telif hakkı korumalı olabilir."}, ensure_ascii=False)
-                    else:
-                        return json.dumps({"durum": "Hata", "mesaj": f"YouTube video yüklenirken hata: {str(yt_error)}"}, ensure_ascii=False)
-                
-                # Video stream'ini alma
-                try:
-                    stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-                    if not stream:
-                        # Alternatif stream arama
-                        stream = yt.streams.filter(file_extension='mp4').first()
-                        if not stream:
-                            logging.error("Hiçbir uygun video akışı bulunamadı")
-                            return json.dumps({"durum": "Hata", "mesaj": "Video indirilebilir bir formatta değil."}, ensure_ascii=False)
-                    
-                    logging.info(f"Stream seçildi: {stream.resolution}, boyut: {stream.filesize} bytes")
-                    
-                    # Dosya boyutu kontrolü (örn: 100MB sınırı)
-                    if stream.filesize and stream.filesize > 100 * 1024 * 1024:  # 100MB
-                        logging.warning(f"Video çok büyük: {stream.filesize} bytes")
-                        return json.dumps({"durum": "Hata", "mesaj": "Video dosyası çok büyük (100MB sınırı). Daha kısa bir video deneyin."}, ensure_ascii=False)
-                        
-                except Exception as stream_error:
-                    logging.error(f"Video stream alma hatası: {str(stream_error)}")
-                    return json.dumps({"durum": "Hata", "mesaj": f"Video stream bilgisi alınamadı: {str(stream_error)}"}, ensure_ascii=False)
-                
-                # İndirme dizini hazırlama
-                temp_dir = "/tmp/video_downloads"
-                try:
+                    temp_dir = "/tmp/video_downloads"
                     os.makedirs(temp_dir, exist_ok=True)
                     logging.debug(f"Geçici dizin oluşturuldu: {temp_dir}")
-                except Exception as dir_error:
-                    logging.error(f"Geçici dizin oluşturma hatası: {str(dir_error)}")
-                    return json.dumps({"durum": "Hata", "mesaj": "Geçici dosya dizini oluşturulamadı."}, ensure_ascii=False)
-                
-                # Video indirme
-                try:
-                    logging.info("Video indirme başlıyor...")
-                    video_path = stream.download(output_path=temp_dir)
-                    logging.info(f"YouTube videosu başarıyla indirildi: {video_path}")
+                    
+                    logging.info("yt-dlp ile video indiriliyor...")
+                    video_path = video_indir(video_url, temp_dir)
+                    
+                    # video_indir fonksiyonu hata durumunda string mesaj döndürür
+                    if video_path.startswith("Video indirme hatası:"):
+                        logging.error(f"Video indirme başarısız: {video_path}")
+                        return json.dumps({"durum": "Hata", "mesaj": video_path}, ensure_ascii=False)
+                    
+                    if not os.path.exists(video_path):
+                        logging.error(f"İndirilen video dosyası bulunamadı: {video_path}")
+                        return json.dumps({"durum": "Hata", "mesaj": "Video indirildikten sonra dosya bulunamadı."}, ensure_ascii=False)
+                    
+                    logging.info(f"Video başarıyla indirildi: {video_path}")
                     logging.debug(f"İndirilen dosya boyutu: {os.path.getsize(video_path)} bytes")
                     temp_dosya = True
+                    
+                    # Dosya boyutu kontrolü (örn: 100MB sınırı)
+                    if os.path.getsize(video_path) > 100 * 1024 * 1024:  # 100MB
+                        logging.warning(f"Video çok büyük: {os.path.getsize(video_path)} bytes")
+                        return json.dumps({"durum": "Hata", "mesaj": "Video dosyası çok büyük (100MB sınırı). Daha kısa bir video deneyin."}, ensure_ascii=False)
+                        
                 except Exception as download_error:
                     logging.error(f"Video indirme hatası: {str(download_error)}")
                     return json.dumps({"durum": "Hata", "mesaj": f"Video indirilemedi: {str(download_error)}"}, ensure_ascii=False)
@@ -161,24 +134,102 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "") -> 
             logging.error("Video işleme zaman aşımına uğradı")
             return json.dumps({"durum": "Hata", "mesaj": "Video işleme çok uzun sürdü. Daha kısa bir video deneyin."}, ensure_ascii=False)
 
-        # AI özet oluşturma
+        # AI özet oluşturma - özet tipine göre farklı promptlar
         try:
-            logging.info("Video başarıyla işlendi. AI özet oluşturma başlıyor...")
+            logging.info(f"Video başarıyla işlendi. AI özet oluşturma başlıyor... Tip: {ozet_tipi}")
             model = genai.GenerativeModel(model_name="gemini-1.5-pro-latest")
             logging.debug("Gemini model oluşturuldu")
             
-            prompt = """
-            Bu videoyu bir öğrenciye ders anlatır gibi analiz et. Aşağıdaki formatta bir özet çıkar:
-            1. **Ana Fikir:** Videonun tek cümlelik özeti.
-            2. **Kilit Öğrenme Noktaları:** Maddeler halinde en önemli 3-5 öğrenme çıktısı.
-            3. **Detaylı Özet:** Videonun içeriğini paragraflar halinde, anlaşılır bir dille açıkla.
-            4. **İlgili Konular:** Videodaki konularla bağlantılı, öğrencinin araştırabileceği 3 ek konu öner.
-            """
+            if ozet_tipi == "kisa":
+                prompt = """
+                Bu videoyu kısaca özetle. Sadece aşağıdaki formatta JSON cevap ver:
+
+                {
+                    "konu": "Videonun ana konusu",
+                    "kisa_ozet": "2-3 cümle halinde videonun ana fikri ve en önemli noktaları"
+                }
+
+                Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
+                """
+            elif ozet_tipi == "genis":
+                prompt = """
+                Bu videoyu detaylı şekilde analiz et. Aşağıdaki formatta JSON cevap ver:
+
+                {
+                    "konu": "Videonun ana konusu ve başlığı",
+                    "genis_ozet": "Videonun çok detaylı içeriği, tüm önemli noktaları, öğrenme çıktıları ve açıklamaları paragraflar halinde",
+                    "kilit_ogrenme_noktalari": ["Detaylı madde 1", "Detaylı madde 2", "Detaylı madde 3", "..."],
+                    "ilgili_konular": ["İlgili konu 1", "İlgili konu 2", "İlgili konu 3"]
+                }
+
+                Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
+                """
+            else:  # kapsamli (varsayılan)
+                prompt = """
+                Bu videoyu bir öğrenciye ders anlatır gibi analiz et. Aşağıdaki formatta bir özet çıkar ve cevabını JSON formatında ver:
+
+                {
+                    "konu": "Videonun ana konusu ve başlığı",
+                    "kisa_ozet": "Tek paragraf halinde videonun ana fikri ve önemli noktaları",
+                    "genis_ozet": "Videonun detaylı içeriği, öğrenme çıktıları ve önemli noktaları paragraflar halinde",
+                    "kilit_ogrenme_noktalari": ["Madde 1", "Madde 2", "Madde 3", "..."],
+                    "ilgili_konular": ["Konu 1", "Konu 2", "Konu 3"],
+                    "yazar_bilgileri": {
+                        "kanal_adi": "Video kanalının adı (varsa)",
+                        "yazar": "İçerik yaratıcısının adı (varsa)",
+                        "sunum_tarzi": "Videonun sunum tarzı ve yaklaşımı hakkında açıklama"
+                    }
+                }
+
+                Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
+                """
             
             logging.info("AI'dan özet isteniyor...")
             response = model.generate_content([prompt, video_file])
             logging.info("AI özeti başarıyla oluşturuldu")
             logging.debug(f"Özet uzunluğu: {len(response.text)} karakter")
+            
+            # JSON cevabını parse et
+            try:
+                # Gemini'nin cevabını temizle (markdown kod blokları varsa)
+                clean_response = response.text.strip()
+                if clean_response.startswith('```json'):
+                    clean_response = clean_response.replace('```json', '').replace('```', '').strip()
+                elif clean_response.startswith('```'):
+                    clean_response = clean_response.replace('```', '').strip()
+                
+                ozet_data = json.loads(clean_response)
+                logging.info("AI cevabı başarıyla JSON formatında parse edildi")
+                
+            except json.JSONDecodeError as json_error:
+                logging.error(f"AI cevabı JSON formatında parse edilemedi: {json_error}")
+                # Fallback: Ham metni kullan
+                if ozet_tipi == "kisa":
+                    ozet_data = {
+                        "konu": "Video İçeriği",
+                        "kisa_ozet": response.text
+                    }
+                elif ozet_tipi == "genis":
+                    ozet_data = {
+                        "konu": "Video İçeriği",
+                        "genis_ozet": response.text,
+                        "kilit_ogrenme_noktalari": [],
+                        "ilgili_konular": []
+                    }
+                else:
+                    ozet_data = {
+                        "konu": "Video İçeriği",
+                        "kisa_ozet": "Video analizi tamamlandı fakat yapılandırılmış format oluşturulamadı.",
+                        "genis_ozet": response.text,
+                        "kilit_ogrenme_noktalari": [],
+                        "ilgili_konular": [],
+                        "yazar_bilgileri": {
+                            "kanal_adi": "Bilinmiyor",
+                            "yazar": "Bilinmiyor",
+                            "sunum_tarzi": "Bilinmiyor"
+                        }
+                    }
+                
         except Exception as ai_error:
             logging.error(f"AI özet oluşturma hatası: {str(ai_error)}")
             return json.dumps({"durum": "Hata", "mesaj": f"AI özet oluşturulamadı: {str(ai_error)}"}, ensure_ascii=False)
@@ -192,7 +243,7 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "") -> 
             logging.warning(f"API'den dosya silme hatası: {str(delete_error)}")
 
         logging.info("Video özetleme işlemi başarıyla tamamlandı")
-        return json.dumps({"durum": "Başarılı", "ozet": response.text}, ensure_ascii=False)
+        return json.dumps({"durum": "Başarılı", "video_analizi": ozet_data}, ensure_ascii=False)
 
     except Exception as e:
         logging.error(f"Beklenmeyen hata: {str(e)}", exc_info=True)
@@ -212,7 +263,7 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "") -> 
 # 4. TOOL TANIMLAMASI
 # -----------------------------------------------------------------------------
 @mcp.tool(tags={"public"})
-def videoyu_ozetle(video_url: str = "", video_dosyasi_yolu: str = "") -> str:
+def videoyu_ozetle(video_url: str = "", video_dosyasi_yolu: str = "", ozet_tipi: str = "kapsamli") -> str:
     """
     VIDEO ÖZETLEME AJANI - Verilen bir videonun içeriğini eğitim odaklı olarak metin formatında özetler.
 
@@ -221,13 +272,14 @@ def videoyu_ozetle(video_url: str = "", video_dosyasi_yolu: str = "") -> str:
     Args:
         video_url (str): Özetlenecek videonun YouTube linki.
         video_dosyasi_yolu (str): (Opsiyonel) Sunucuda bulunan bir video dosyasının yolu.
+        ozet_tipi (str): Özet türü - "kisa" (sadece kısa özet), "genis" (sadece detaylı özet), "kapsamli" (her ikisi de). Varsayılan: "kapsamli"
     
     Returns:
         str: Videonun özetini içeren bir JSON string'i.
     """
     logging.info("videoyu_ozetle tool'u çağrıldı")
     # Bu fonksiyon, asıl işi yapan logic fonksiyonunu çağırır.
-    return _videoyu_ozetle_logic(video_url=video_url, video_dosyasi_yolu=video_dosyasi_yolu)
+    return _videoyu_ozetle_logic(video_url=video_url, video_dosyasi_yolu=video_dosyasi_yolu, ozet_tipi=ozet_tipi)
 
 
 # 5. MCP SUNUCUSUNU BAŞLATMA
