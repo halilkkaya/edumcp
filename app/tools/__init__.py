@@ -3,7 +3,8 @@ from importlib import import_module
 tool_modules = [
     "quiz_generator",
     "pdf_summarizer",
-    "video_summarizer"
+    "video_summarizer",
+    "audio_transcriber"
 ]
 
 for module_name in tool_modules:
