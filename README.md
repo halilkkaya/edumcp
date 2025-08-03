@@ -1,1 +1,10 @@
 # edumcp
+
+.env
+
+GEMINI_API_KEY=
+MCP_URL= 
+DB_HOST=
+DB_USER=
+DB_PASSWORD=
+DB_NAME=
