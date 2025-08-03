@@ -3,7 +3,6 @@ import json
 import time
 import logging
 import google.generativeai as genai
-from app.server import mcp
 from app.config import GEMINI_API_KEY
 
 def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_dil: str = "otomatik") -> str:
@@ -267,7 +266,6 @@ def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_
         return json.dumps({"durum": "Hata", "mesaj": f"Beklenmeyen bir hata oluştu: {str(e)}"}, ensure_ascii=False)
 
 
-@mcp.tool(tags={"public"})
 def pdf_ozetle(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_dil: str = "otomatik") -> str:
     """
     GELİŞMİŞ PDF ÖZETLEME AJANI - Verilen bir PDF belgesinin içeriğini sayfa özetleri, tablolar, kaynaklar ve alıntılar ile birlikte eğitim odaklı olarak özetler.

@@ -1,3 +1,39 @@
-google-generativeai
-flask
-python-dotenv
+# MCP (Model Context Protocol) - Standart kütüphane
+mcp>=1.12.3
+
+# Google Gemini AI
+google-generativeai>=0.8.0
+
+# Çevre değişkenleri için
+python-dotenv>=1.0.0
+
+# Ses işleme için
+speechrecognition>=3.10.0
+pydub>=0.25.1
+
+# PDF işleme için
+PyPDF2>=3.0.1
+pdfplumber>=0.10.0
+
+# Video işleme için
+moviepy>=1.0.3
+
+# HTTP istekleri için
+httpx>=0.27.0
+requests>=2.31.0
+
+# Async işlemler için
+asyncio-mqtt>=0.16.0
+
+# Logging için
+rich>=13.0.0
+
+# Web uygulaması için
+Flask>=2.3.0
+Flask-Session>=0.5.0
+
+# Database için
+mysql-connector-python>=8.0.0
+
+# Güvenlik için
+bcrypt>=4.0.0 

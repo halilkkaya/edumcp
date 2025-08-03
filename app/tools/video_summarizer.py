@@ -8,7 +8,6 @@ import yt_dlp
 import re
 from app.functions import video_indir
 import google.generativeai as genai
-from app.server import mcp
 from app.config import GEMINI_API_KEY
 
 
@@ -137,7 +136,7 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "", oze
                     "video_sonrasi_ogrenilecekler": "Bu videoyu izledikten sonra şunları öğrenmiş olacaksınız: (kısa bir özet)"
                 }}
 
-                Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
+                ÖNEMLİ: Sadece JSON formatında cevap ver. Başka metin, açıklama veya markdown kodu ekleme. Cevabın tamamen geçerli JSON olması gerekiyor.
                 """
             elif ozet_tipi == "genis":
                 prompt = f"""
@@ -163,7 +162,7 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "", oze
                     "video_sonrasi_ogrenilecekler": "Bu videoyu izledikten sonra şunları öğrenmiş olacaksınız: (detaylı açıklama)"
                 }}
 
-                Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
+                ÖNEMLİ: Sadece JSON formatında cevap ver. Başka metin, açıklama veya markdown kodu ekleme. Cevabın tamamen geçerli JSON olması gerekiyor.
                 """
             else:  # kapsamli (varsayılan)
                 prompt = f"""
@@ -205,7 +204,7 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "", oze
                 - Bahsedilen kaynakları, kitapları, web sitelerini listele
                 - "video_sonrasi_ogrenilecekler" alanında bu videoyu tamamen izleyen bir kişinin hangi bilgi ve becerileri kazanacağını özetle
 
-                Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
+                ÖNEMLİ: Sadece JSON formatında cevap ver. Başka metin, açıklama veya markdown kodu ekleme. Cevabın tamamen geçerli JSON olması gerekiyor.
                 """
             
             logging.info("AI'dan özet isteniyor...")
@@ -213,26 +212,42 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "", oze
             logging.info("AI özeti başarıyla oluşturuldu")
             logging.debug(f"Özet uzunluğu: {len(response.text)} karakter")
             
+            # AI cevabının boş olup olmadığını kontrol et
+            if not response.text or not response.text.strip():
+                logging.error("AI'dan boş cevap geldi")
+                raise Exception("AI'dan boş cevap alındı")
+            
             # JSON cevabını parse et
             try:
                 # Gemini'nin cevabını temizle (markdown kod blokları varsa)
                 clean_response = response.text.strip()
+                logging.debug(f"AI'dan gelen ham cevap: {clean_response[:200]}...")
+                
+                # Boş cevap kontrolü
+                if not clean_response:
+                    logging.warning("AI'dan boş cevap geldi")
+                    raise json.JSONDecodeError("Boş cevap", "", 0)
+                
+                # Markdown kod bloklarını temizle
                 if clean_response.startswith('```json'):
                     clean_response = clean_response.replace('```json', '').replace('```', '').strip()
                 elif clean_response.startswith('```'):
                     clean_response = clean_response.replace('```', '').strip()
                 
+                # JSON parse etmeyi dene
                 ozet_data = json.loads(clean_response)
                 logging.info("AI cevabı başarıyla JSON formatında parse edildi")
                 
             except json.JSONDecodeError as json_error:
                 logging.error(f"AI cevabı JSON formatında parse edilemedi: {json_error}")
-                # Fallback: Ham metni kullan
+                logging.debug(f"Parse edilemeyen cevap: {clean_response}")
+                
+                # Fallback: Ham metni kullan ve daha güvenli bir yapı oluştur
                 if ozet_tipi == "kisa":
                     ozet_data = {
                         "video_dili": "Algılanamadı",
                         "konu": "Video İçeriği",
-                        "kisa_ozet": response.text,
+                        "kisa_ozet": clean_response if clean_response else "Video analizi tamamlandı fakat özet oluşturulamadı.",
                         "anahtar_kelimeler": [],
                         "ogrenme_ciktilari": [],
                         "video_sonrasi_ogrenilecekler": "Bu videoyu izledikten sonra çeşitli bilgiler edinmiş olacaksınız."
@@ -241,7 +256,7 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "", oze
                     ozet_data = {
                         "video_dili": "Algılanamadı",
                         "konu": "Video İçeriği",
-                        "genis_ozet": response.text,
+                        "genis_ozet": clean_response if clean_response else "Video analizi tamamlandı fakat detaylı özet oluşturulamadı.",
                         "zaman_damgalari": [],
                         "kilit_ogrenme_noktalari": [],
                         "gorsel_aciklamalar": [],
@@ -257,7 +272,7 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "", oze
                         "video_dili": "Algılanamadı",
                         "konu": "Video İçeriği",
                         "kisa_ozet": "Video analizi tamamlandı fakat yapılandırılmış format oluşturulamadı.",
-                        "genis_ozet": response.text,
+                        "genis_ozet": clean_response if clean_response else "Video analizi tamamlandı fakat detaylı özet oluşturulamadı.",
                         "zaman_damgalari": [],
                         "kilit_ogrenme_noktalari": [],
                         "gorsel_aciklamalar": [],
@@ -303,7 +318,6 @@ def _videoyu_ozetle_logic(video_url: str = "", video_dosyasi_yolu: str = "", oze
             except Exception as e:
                 logging.error(f"Geçici dosya silinirken hata: {e}")
 
-@mcp.tool(tags={"public"})
 def videoyu_ozetle(video_url: str = "", video_dosyasi_yolu: str = "", ozet_tipi: str = "kapsamli", hedef_dil: str = "otomatik") -> str:
     """
     GELİŞMİŞ VIDEO ÖZETLEME AJANI - Verilen bir videonun içeriğini zaman damgaları, görsel açıklamalar ve kaynaklar ile birlikte eğitim odaklı olarak özetler.

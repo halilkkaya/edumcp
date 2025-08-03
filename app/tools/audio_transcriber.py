@@ -7,7 +7,6 @@ import time
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 import google.generativeai as genai
-from app.server import mcp
 from app.config import GEMINI_API_KEY
 
 
@@ -206,7 +205,6 @@ def _ses_transkript_logic(ses_kaynagi: str, cikti_tipi: str = "transkript", hede
         return json.dumps({"durum": "Hata", "mesaj": f"Beklenmeyen bir hata oluştu: {str(e)}"}, ensure_ascii=False)
 
 
-@mcp.tool(tags={"public"})
 def ses_dosyasini_transkript_et(ses_dosyasi_yolu: str, cikti_tipi: str = "ozet", hedef_dil: str = "otomatik") -> str:
     """
     GELİŞMİŞ SES TRANSKRİPSİYON AJANI - Verilen ses dosyasını yazıya çevirir ve detaylı analiz yapar.

@@ -2,14 +2,57 @@ import os
 import json
 import time
 import logging
+import requests
 import google.generativeai as genai
-from app.server import mcp
 from app.config import GEMINI_API_KEY
 
-def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tipi: str = "karisik") -> str:
+def search_web(query, max_results=5):
+    """Google Custom Search API ile web araması yap"""
+    try:
+        # Google Custom Search API ayarları
+        GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
+        GOOGLE_CSE_ID = os.getenv("GEMINI_API_KEY")
+        
+        if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+            logging.warning("Google API anahtarları bulunamadı, web araması yapılamıyor")
+            return []
+        
+        url = "https://www.googleapis.com/customsearch/v1"
+        params = {
+            'key': GOOGLE_API_KEY,
+            'cx': GOOGLE_CSE_ID,
+            'q': query,
+            'num': max_results,
+            'dateRestrict': 'm1',  # Son 1 ay
+            'sort': 'date'  # Tarihe göre sırala
+        }
+        
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        
+        data = response.json()
+        results = []
+        
+        if 'items' in data:
+            for item in data['items']:
+                results.append({
+                    'title': item.get('title', ''),
+                    'snippet': item.get('snippet', ''),
+                    'link': item.get('link', ''),
+                    'date': item.get('pagemap', {}).get('metatags', [{}])[0].get('article:published_time', '')
+                })
+        
+        logging.info(f"Web araması tamamlandı: {len(results)} sonuç bulundu")
+        return results
+        
+    except Exception as e:
+        logging.error(f"Web arama hatası: {str(e)}")
+        return []
+
+def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tipi: str = "karisik", web_arama: bool = True) -> str:
     """Verilen konuda soru oluşturmanın çekirdek mantığını içeren fonksiyon."""
     logging.info("Soru oluşturma işlemi başlatıldı")
-    logging.debug(f"Gelen parametreler - konu: {konu}, soru_sayisi: {soru_sayisi}, zorluk: {zorluk}, soru_tipi: {soru_tipi}")
+    logging.debug(f"Gelen parametreler - konu: {konu}, soru_sayisi: {soru_sayisi}, zorluk: {zorluk}, soru_tipi: {soru_tipi}, web_arama: {web_arama}")
     
     if not konu or konu.strip() == "":
         logging.warning("Konu belirtilmedi")
@@ -30,6 +73,25 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
         return json.dumps({"durum": "Hata", "mesaj": f"Soru tipi şunlardan biri olmalıdır: {', '.join(soru_tipleri)}"}, ensure_ascii=False)
 
     try:
+        # Web araması yap
+        web_bilgileri = ""
+        if web_arama:
+            logging.info(f"'{konu}' konusunda web araması yapılıyor...")
+            search_results = search_web(f"{konu} güncel bilgiler 2024", max_results=3)
+            
+            if search_results:
+                web_bilgileri = "\n\nGÜNCEL WEB BİLGİLERİ:\n"
+                for i, result in enumerate(search_results, 1):
+                    web_bilgileri += f"""
+{i}. {result['title']}
+   {result['snippet']}
+   Kaynak: {result['link']}
+   Tarih: {result['date'] if result['date'] else 'Bilinmiyor'}
+"""
+                logging.info("Web araması başarılı, güncel bilgiler eklendi")
+            else:
+                logging.warning("Web araması sonuç vermedi, sadece model bilgileri kullanılacak")
+        
         logging.info(f"AI'dan {konu} konusunda {soru_sayisi} adet {zorluk} seviyesinde {soru_tipi} türünde sorular isteniyor...")
         if not GEMINI_API_KEY:
             logging.error("GEMINI_API_KEY bulunamadı")
@@ -61,6 +123,9 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
         Özellikler:
         - Zorluk seviyesi: {zorluk} ({zorluk_aciklamasi[zorluk]})
         - Soru tipi: {soru_tipi} ({tip_aciklamasi[soru_tipi]})
+        - Web araması: {'Aktif' if web_arama else 'Pasif'}
+        
+        {web_bilgileri}
         
         Aşağıdaki JSON formatında cevap ver:
         
@@ -69,6 +134,7 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
             "soru_sayisi": {soru_sayisi},
             "zorluk_seviyesi": "{zorluk}",
             "soru_tipi": "{soru_tipi}",
+            "web_arama_yapildi": {str(web_arama).lower()},
             "sorular": [
                 {{
                     "soru_no": 1,
@@ -79,7 +145,8 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
                     "dogru_cevap": "A) Seçenek 1",
                     "aciklama": "Neden bu cevabın doğru olduğunun detaylı açıklaması",
                     "konular": ["Alt konu 1", "Alt konu 2"],
-                    "ogrenme_hedefi": "Bu soruyla test edilen öğrenme hedefi"
+                    "ogrenme_hedefi": "Bu soruyla test edilen öğrenme hedefi",
+                    "kaynak_bilgisi": "Bu soru için kullanılan kaynak (web aramasından geliyorsa belirt)"
                 }},
                 {{
                     "soru_no": 2,
@@ -90,7 +157,8 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
                     "dogru_cevap": "Örnek doğru cevap veya cevap anahtarı",
                     "aciklama": "Cevap kriterlerinin detaylı açıklaması",
                     "konular": ["Alt konu 1", "Alt konu 2"],
-                    "ogrenme_hedefi": "Bu soruyla test edilen öğrenme hedefi"
+                    "ogrenme_hedefi": "Bu soruyla test edilen öğrenme hedefi",
+                    "kaynak_bilgisi": "Bu soru için kullanılan kaynak"
                 }},
                 {{
                     "soru_no": 3,
@@ -101,7 +169,8 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
                     "dogru_cevap": "Doğru",
                     "aciklama": "Neden doğru veya yanlış olduğunun açıklaması",
                     "konular": ["Alt konu 1"],
-                    "ogrenme_hedefi": "Bu soruyla test edilen öğrenme hedefi"
+                    "ogrenme_hedefi": "Bu soruyla test edilen öğrenme hedefi",
+                    "kaynak_bilgisi": "Bu soru için kullanılan kaynak"
                 }}
             ],
             "genel_bilgiler": {{
@@ -110,7 +179,12 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
                 "konu_dagilimi": ["Ana konu 1: X soru", "Ana konu 2: Y soru"],
                 "zorluk_dagilimi": ["Kolay: X soru", "Orta: Y soru", "Zor: Z soru"],
                 "tavsiyeler": ["Çalışma tavsiyesi 1", "Tavsiye 2"],
-                "kaynak_onerileri": ["Önerilen kaynak 1", "Kaynak 2"]
+                "kaynak_onerileri": ["Önerilen kaynak 1", "Kaynak 2"],
+                "web_arama_sonuclari": {{
+                    "arama_yapildi": {str(web_arama).lower()},
+                    "bulunan_kaynak_sayisi": len(search_results) if web_arama else 0,
+                    "kullanilan_kaynaklar": [result['link'] for result in search_results] if web_arama and search_results else []
+                }}
             }}
         }}
         
@@ -125,6 +199,8 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
         8. Soruların zorluk seviyesi belirtilen kriterlere uymalı
         9. Türkçe dilbilgisi kurallarına dikkat et
         10. Öğretici ve eğitici içerik oluştur
+        11. Web aramasından gelen güncel bilgileri kullan
+        12. Güncel olaylar, yeni teknolojiler, son gelişmeler varsa bunları dahil et
         
         Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
         """
@@ -154,6 +230,7 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
                 "soru_sayisi": soru_sayisi,
                 "zorluk_seviyesi": zorluk,
                 "soru_tipi": soru_tipi,
+                "web_arama_yapildi": web_arama,
                 "sorular": [
                     {
                         "soru_no": 1,
@@ -164,7 +241,8 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
                         "dogru_cevap": "Konu hakkında temel bilgiler ve kavramların açıklanması beklenir.",
                         "aciklama": "Bu soru konuyla ilgili genel bilgi düzeyini ölçer.",
                         "konular": [konu],
-                        "ogrenme_hedefi": "Konu hakkında temel bilgi düzeyini değerlendirmek"
+                        "ogrenme_hedefi": "Konu hakkında temel bilgi düzeyini değerlendirmek",
+                        "kaynak_bilgisi": "Model bilgileri"
                     }
                 ],
                 "genel_bilgiler": {
@@ -173,7 +251,12 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
                     "konu_dagilimi": [f"{konu}: {soru_sayisi} soru"],
                     "zorluk_dagilimi": [f"{zorluk.title()}: {soru_sayisi} soru"],
                     "tavsiyeler": ["Konuyu tekrar edin", "Örnekler üzerinde çalışın"],
-                    "kaynak_onerileri": ["İlgili ders kitapları", "Online eğitim materyalleri"]
+                    "kaynak_onerileri": ["İlgili ders kitapları", "Online eğitim materyalleri"],
+                    "web_arama_sonuclari": {
+                        "arama_yapildi": web_arama,
+                        "bulunan_kaynak_sayisi": len(search_results) if web_arama else 0,
+                        "kullanilan_kaynaklar": [result['link'] for result in search_results] if web_arama and search_results else []
+                    }
                 }
             }
             
@@ -185,10 +268,10 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
         logging.debug(f"Hata türü: {type(e).__name__}")
         return json.dumps({"durum": "Hata", "mesaj": f"Beklenmeyen bir hata oluştu: {str(e)}"}, ensure_ascii=False)
 
-@mcp.tool(tags={"public"})
-def soru_olustur(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tipi: str = "karisik") -> str:
+def soru_olustur(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tipi: str = "karisik", web_arama: bool = True) -> str:
     """
     EĞİTİM SORU OLUŞTURMA AJANI - Verilen konuda akademik standartlarda sorular oluşturur ve detaylı cevap anahtarları sağlar.
+    Web araması özelliği ile güncel bilgileri kullanır.
 
     Kullanıcı "bu konu hakkında soru sor", "test hazırla", "sınav soruları oluştur" dediğinde bu aracı kullan.
 
@@ -197,6 +280,7 @@ def soru_olustur(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tip
         soru_sayisi (int): Oluşturulacak soru adedi (1-20 arası). Varsayılan: 5
         zorluk (str): Zorluk seviyesi - "kolay", "orta", "zor", "karisik". Varsayılan: "orta"
         soru_tipi (str): Soru türü - "test" (çoktan seçmeli), "acik_uclu", "dogru_yanlis", "karisik". Varsayılan: "karisik"
+        web_arama (bool): Web araması yapılıp yapılmayacağı - True/False. Varsayılan: True
     
     Returns:
         str: Oluşturulan soruları içeren bir JSON string'i. İçerik:
@@ -209,8 +293,10 @@ def soru_olustur(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tip
         - Çözüm süre tahminleri
         - Çalışma tavsiyeleri ve kaynak önerileri
         - Puanlama rehberi
+        - Web arama sonuçları ve kullanılan kaynaklar
+        - Güncel bilgiler ve son gelişmeler
     """
     logging.info("soru_olustur tool'u çağrıldı")
     # Bu fonksiyon, asıl işi yapan logic fonksiyonunu çağırır.
-    return _soru_olustur_logic(konu=konu, soru_sayisi=soru_sayisi, zorluk=zorluk, soru_tipi=soru_tipi)
+    return _soru_olustur_logic(konu=konu, soru_sayisi=soru_sayisi, zorluk=zorluk, soru_tipi=soru_tipi, web_arama=web_arama)
 
