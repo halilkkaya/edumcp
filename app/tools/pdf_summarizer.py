@@ -1,56 +1,81 @@
 import os
 import json
+import asyncio  # Asenkron operasyonlar için temel kütüphane
 import time
+import anyio
 import logging
 import google.generativeai as genai
 from app.config import GEMINI_API_KEY
+from app.server import mcp
 
-def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_dil: str = "otomatik") -> str:
-    """PDF özetlemenin tüm çekirdek mantığını içeren, test edilebilir fonksiyon."""
-    logging.info("PDF özetleme işlemi başlatıldı")
+# Ortak klasör yolu
+SHARED_UPLOADS_DIR = r'C:\mcpler\education_mcp\shared_uploads'
+
+async def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kisa", hedef_dil: str = "otomatik") -> str:
+    """PDF özetlemenin tüm çekirdek mantığını içeren, test edilebilir ve asenkron çalışan fonksiyon."""
+    logging.info("Asenkron PDF özetleme işlemi başlatıldı")
     logging.debug(f"Gelen parametreler - pdf_dosyasi_yolu: {pdf_dosyasi_yolu}, ozet_tipi: {ozet_tipi}, hedef_dil: {hedef_dil}")
     
     if not pdf_dosyasi_yolu:
         logging.warning("PDF dosya yolu sağlanmadı")
         return json.dumps({"durum": "Hata", "mesaj": "Bir PDF dosya yolu sağlamalısınız."}, ensure_ascii=False)
 
+    # Dosya yolunu işle - tam yoldan sadece dosya adını al
+    if os.path.sep in pdf_dosyasi_yolu:
+        # Tam yol verilmiş, sadece dosya adını al
+        dosya_adi = os.path.basename(pdf_dosyasi_yolu)
+        logging.info(f"Tam yol verildi, dosya adı çıkarıldı: {dosya_adi}")
+    else:
+        # Sadece dosya adı verilmiş
+        dosya_adi = pdf_dosyasi_yolu
+        logging.info(f"Sadece dosya adı verildi: {dosya_adi}")
+    
+    # Dosya yolunu ortak klasörden oluştur
+    full_pdf_path = os.path.join(SHARED_UPLOADS_DIR, dosya_adi)
+    logging.info(f"PDF dosyası aranıyor: {full_pdf_path}")
+
     try:
-        # Dosya varlığını kontrol et
-        if not os.path.exists(pdf_dosyasi_yolu):
-            logging.error(f"PDF dosyası bulunamadı: {pdf_dosyasi_yolu}")
-            return json.dumps({"durum": "Hata", "mesaj": f"PDF dosyası bulunamadı: {pdf_dosyasi_yolu}"}, ensure_ascii=False)
+        # Dosya varlığını kontrol et (asenkron)
+        if not await anyio.to_thread.run_sync(os.path.exists, full_pdf_path):
+            logging.error(f"PDF dosyası bulunamadı: {full_pdf_path}")
+            return json.dumps({"durum": "Hata", "mesaj": f"PDF dosyası bulunamadı: {dosya_adi}. Ortak klasörde dosya var mı kontrol edin."}, ensure_ascii=False)
         
         # Dosya uzantısını kontrol et
-        if not pdf_dosyasi_yolu.lower().endswith('.pdf'):
-            logging.error(f"Dosya PDF formatında değil: {pdf_dosyasi_yolu}")
+        if not full_pdf_path.lower().endswith('.pdf'):
+            logging.error(f"Dosya PDF formatında değil: {full_pdf_path}")
             return json.dumps({"durum": "Hata", "mesaj": "Sadece PDF dosyaları desteklenmektedir."}, ensure_ascii=False)
         
-        # Dosya boyutu kontrolü (örn: 50MB sınırı)
-        dosya_boyutu = os.path.getsize(pdf_dosyasi_yolu)
+        # Dosya boyutu kontrolü (asenkron)
+        dosya_boyutu = await anyio.to_thread.run_sync(os.path.getsize, full_pdf_path)
         logging.debug(f"PDF dosya boyutu: {dosya_boyutu} bytes")
         if dosya_boyutu > 50 * 1024 * 1024:  # 50MB
             logging.warning(f"PDF çok büyük: {dosya_boyutu} bytes")
             return json.dumps({"durum": "Hata", "mesaj": "PDF dosyası çok büyük (50MB sınırı). Daha küçük bir dosya deneyin."}, ensure_ascii=False)
 
-        # Gemini API'ye yükleme
+        # Gemini API'ye yükleme (asenkron)
         try:
-            logging.info(f"PDF Gemini API'ye yükleniyor: {pdf_dosyasi_yolu}")
-            pdf_file = genai.upload_file(path=pdf_dosyasi_yolu, mime_type="application/pdf")
+            logging.info(f"PDF Gemini API'ye yükleniyor: {full_pdf_path}")
+            # genai.upload_file'ı anyio ile asenkron çalıştır
+            def upload_pdf():
+                return genai.upload_file(path=full_pdf_path, mime_type="application/pdf")
+            
+            pdf_file = await anyio.to_thread.run_sync(upload_pdf)
             logging.info(f"Yükleme başladı: {pdf_file.name}. İşlenmesi bekleniyor...")
             logging.debug(f"PDF dosyası durumu: {pdf_file.state.name}")
         except Exception as upload_error:
             logging.error(f"Gemini API yükleme hatası: {str(upload_error)}")
             return json.dumps({"durum": "Hata", "mesaj": f"PDF Gemini API'ye yüklenemedi: {str(upload_error)}"}, ensure_ascii=False)
 
-        # PDF işleme bekleme
+        # PDF işleme bekleme (asenkron)
         progress_counter = 0
         max_wait_time = 180  # 3 dakika maksimum bekleme (PDF'ler daha uzun sürebilir)
         while pdf_file.state.name == "PROCESSING" and progress_counter < max_wait_time // 5:
             progress_counter += 1
             print('.', end='', flush=True)
             logging.debug(f"İşleme devam ediyor... ({progress_counter * 5} saniye geçti)")
-            time.sleep(5)
-            pdf_file = genai.get_file(pdf_file.name)
+            # asyncio.sleep ile asenkron bekleme
+            await asyncio.sleep(5)
+            pdf_file = await anyio.to_thread.run_sync(genai.get_file, pdf_file.name)
 
         print()  # Satır sonu için
         logging.info(f"PDF işleme tamamlandı. Final durumu: {pdf_file.state.name}")
@@ -63,7 +88,7 @@ def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_
             logging.error("PDF işleme zaman aşımına uğradı")
             return json.dumps({"durum": "Hata", "mesaj": "PDF işleme çok uzun sürdü. Daha küçük bir dosya deneyin."}, ensure_ascii=False)
 
-        # AI özet oluşturma - özet tipine göre farklı promptlar
+        # AI özet oluşturma (asenkron)
         try:
             logging.info(f"PDF başarıyla işlendi. AI özet oluşturma başlıyor... Tip: {ozet_tipi}, Hedef dil: {hedef_dil}")
             if not GEMINI_API_KEY:
@@ -124,7 +149,7 @@ def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_
 
                 Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
                 """
-            else:  # kapsamli (varsayılan)
+            elif ozet_tipi == "kapsamli":  # kapsamli (varsayılan)
                 prompt = f"""
                 {dil_talimat}
                 
@@ -175,8 +200,9 @@ def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_
                 Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
                 """
             
-            logging.info("AI'dan PDF özeti isteniyor...")
-            response = model.generate_content([prompt, pdf_file])
+            logging.info("AI'dan PDF özeti isteniyor (asenkron)...")
+            # model.generate_content anyio ile asenkron çalıştırılır
+            response = await anyio.to_thread.run_sync(model.generate_content, [prompt, pdf_file])
             logging.info("AI PDF özeti başarıyla oluşturuldu")
             logging.debug(f"Özet uzunluğu: {len(response.text)} karakter")
             
@@ -249,10 +275,10 @@ def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_
             logging.error(f"AI PDF özet oluşturma hatası: {str(ai_error)}")
             return json.dumps({"durum": "Hata", "mesaj": f"AI PDF özeti oluşturulamadı: {str(ai_error)}"}, ensure_ascii=False)
 
-        # Temizlik
+        # Temizlik (asenkron)
         try:
             logging.info("Yüklenen PDF dosyası API'den siliniyor...")
-            genai.delete_file(pdf_file.name)
+            await anyio.to_thread.run_sync(genai.delete_file, pdf_file.name)
             logging.info(f"Yüklenen dosya ({pdf_file.name}) API'den başarıyla silindi")
         except Exception as delete_error:
             logging.warning(f"API'den dosya silme hatası: {str(delete_error)}")
@@ -265,8 +291,8 @@ def _pdf_ozetle_logic(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_
         logging.debug(f"Hata türü: {type(e).__name__}")
         return json.dumps({"durum": "Hata", "mesaj": f"Beklenmeyen bir hata oluştu: {str(e)}"}, ensure_ascii=False)
 
-
-def pdf_ozetle(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_dil: str = "otomatik") -> str:
+@mcp.tool(tags={"public"})
+async def pdf_ozetle(pdf_dosyasi_yolu: str, ozet_tipi: str = "kisa", hedef_dil: str = "otomatik") -> str:
     """
     GELİŞMİŞ PDF ÖZETLEME AJANI - Verilen bir PDF belgesinin içeriğini sayfa özetleri, tablolar, kaynaklar ve alıntılar ile birlikte eğitim odaklı olarak özetler.
 
@@ -291,7 +317,7 @@ def pdf_ozetle(pdf_dosyasi_yolu: str, ozet_tipi: str = "kapsamli", hedef_dil: st
         - Önemli alıntılar ve anahtar cümleler
         - Belge sonrası öğrenilecekler özeti
     """
-    logging.info("pdf_ozetle tool'u çağrıldı")
-    # Bu fonksiyon, asıl işi yapan logic fonksiyonunu çağırır.
-    return _pdf_ozetle_logic(pdf_dosyasi_yolu=pdf_dosyasi_yolu, ozet_tipi=ozet_tipi, hedef_dil=hedef_dil)
+    logging.info("pdf_ozetle async tool'u çağrıldı")
+    # Bu fonksiyon, asıl işi yapan asenkron logic fonksiyonunu çağırır.
+    return await _pdf_ozetle_logic(pdf_dosyasi_yolu=pdf_dosyasi_yolu, ozet_tipi=ozet_tipi, hedef_dil=hedef_dil)
 

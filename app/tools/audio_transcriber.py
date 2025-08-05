@@ -1,47 +1,66 @@
+
 # education_mcp/app/tools/audio_transcriber.py
 
 import json
 import os
 import logging
+import asyncio  # Asenkron operasyonlar için temel kütüphane
 import time
+import anyio
 from dotenv import load_dotenv
-from fastmcp import FastMCP
+from app.server import mcp
 import google.generativeai as genai
 from app.config import GEMINI_API_KEY
 
+# Ortak klasör yolu
+SHARED_UPLOADS_DIR = r'C:\mcpler\education_mcp\shared_uploads'
 
-def _ses_transkript_logic(ses_kaynagi: str, cikti_tipi: str = "transkript", hedef_dil: str = "otomatik") -> str:
-    """Ses transkripsiyon işleminin tüm çekirdek mantığını içeren, test edilebilir fonksiyon."""
-    logging.info("Ses transkripsiyon işlemi başlatıldı")
+async def _ses_transkript_logic(ses_kaynagi: str, cikti_tipi: str = "ozet", hedef_dil: str = "otomatik") -> str:
+    """Ses transkripsiyon işleminin tüm çekirdek mantığını içeren, test edilebilir ve asenkron çalışan fonksiyon."""
+    logging.info("Asenkron ses transkripsiyon işlemi başlatıldı")
     logging.debug(f"Gelen parametreler - ses_kaynagi: {ses_kaynagi}, cikti_tipi: {cikti_tipi}, hedef_dil: {hedef_dil}")
     
     if not ses_kaynagi:
         logging.warning("Ses kaynağı sağlanmadı")
         return json.dumps({"durum": "Hata", "mesaj": "Bir ses dosyası yolu veya URL'i sağlamalısınız."}, ensure_ascii=False)
 
+    # Dosya yolunu işle - tam yoldan sadece dosya adını al
+    if os.path.sep in ses_kaynagi:
+        # Tam yol verilmiş, sadece dosya adını al
+        dosya_adi = os.path.basename(ses_kaynagi)
+        logging.info(f"Tam yol verildi, dosya adı çıkarıldı: {dosya_adi}")
+    else:
+        # Sadece dosya adı verilmiş
+        dosya_adi = ses_kaynagi
+        logging.info(f"Sadece dosya adı verildi: {dosya_adi}")
+    
+    # Dosya yolunu ortak klasörden oluştur
+    full_audio_path = os.path.join(SHARED_UPLOADS_DIR, dosya_adi)
+    logging.info(f"Ses dosyası aranıyor: {full_audio_path}")
+
     try:
-        # Dosya varlığını kontrol et
-        if not os.path.exists(ses_kaynagi):
-            logging.error(f"Ses dosyası bulunamadı: {ses_kaynagi}")
-            return json.dumps({"durum": "Hata", "mesaj": f"Ses dosyası bulunamadı: {ses_kaynagi}"}, ensure_ascii=False)
+        # Dosya varlığını kontrol et (asenkron)
+        if not await anyio.to_thread.run_sync(os.path.exists, full_audio_path):
+            logging.error(f"Ses dosyası bulunamadı: {full_audio_path}")
+            return json.dumps({"durum": "Hata", "mesaj": f"Ses dosyası bulunamadı: {dosya_adi}. Ortak klasörde dosya var mı kontrol edin."}, ensure_ascii=False)
         
         # Desteklenen ses formatlarını kontrol et
         desteklenen_formatlar = ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.webm']
-        dosya_uzantisi = os.path.splitext(ses_kaynagi)[1].lower()
+        dosya_uzantisi = os.path.splitext(full_audio_path)[1].lower()
         if dosya_uzantisi not in desteklenen_formatlar:
             logging.error(f"Desteklenmeyen ses formatı: {dosya_uzantisi}")
             return json.dumps({"durum": "Hata", "mesaj": f"Desteklenen formatlar: {', '.join(desteklenen_formatlar)}"}, ensure_ascii=False)
         
-        # Dosya boyutu kontrolü (örn: 100MB sınırı)
-        dosya_boyutu = os.path.getsize(ses_kaynagi)
+        # Dosya boyutu kontrolü (asenkron)
+        dosya_boyutu = await anyio.to_thread.run_sync(os.path.getsize, full_audio_path)
         logging.debug(f"Ses dosya boyutu: {dosya_boyutu} bytes")
         if dosya_boyutu > 100 * 1024 * 1024:  # 100MB
             logging.warning(f"Ses dosyası çok büyük: {dosya_boyutu} bytes")
             return json.dumps({"durum": "Hata", "mesaj": "Ses dosyası çok büyük (100MB sınırı). Daha küçük bir dosya deneyin."}, ensure_ascii=False)
 
-        # Gemini API'ye yükleme
+        # Gemini API'ye yükleme (asenkron)
         try:
-            logging.info(f"Ses dosyası Gemini API'ye yükleniyor: {ses_kaynagi}")
+            logging.info(f"Ses dosyası Gemini API'ye yükleniyor: {full_audio_path}")
             # MIME type'ı belirle
             mime_map = {
                 '.mp3': 'audio/mp3',
@@ -54,22 +73,27 @@ def _ses_transkript_logic(ses_kaynagi: str, cikti_tipi: str = "transkript", hede
             }
             mime_type = mime_map.get(dosya_uzantisi, 'audio/mpeg')
             
-            ses_dosyasi = genai.upload_file(path=ses_kaynagi, mime_type=mime_type)
+            # genai.upload_file'ı anyio ile asenkron çalıştır
+            def upload_audio():
+                return genai.upload_file(path=full_audio_path, mime_type=mime_type)
+            
+            ses_dosyasi = await anyio.to_thread.run_sync(upload_audio)
             logging.info(f"Yükleme başladı: {ses_dosyasi.name}. İşlenmesi bekleniyor...")
             logging.debug(f"Ses dosyası durumu: {ses_dosyasi.state.name}")
         except Exception as upload_error:
             logging.error(f"Gemini API yükleme hatası: {str(upload_error)}")
             return json.dumps({"durum": "Hata", "mesaj": f"Ses dosyası Gemini API'ye yüklenemedi: {str(upload_error)}"}, ensure_ascii=False)
 
-        # Ses işleme bekleme
+        # Ses işleme bekleme (asenkron)
         progress_counter = 0
         max_wait_time = 120  # 2 dakika maksimum bekleme
         while ses_dosyasi.state.name == "PROCESSING" and progress_counter < max_wait_time // 5:
             progress_counter += 1
             print('.', end='', flush=True)
             logging.debug(f"İşleme devam ediyor... ({progress_counter * 5} saniye geçti)")
-            time.sleep(5)
-            ses_dosyasi = genai.get_file(ses_dosyasi.name)
+            # asyncio.sleep ile asenkron bekleme
+            await asyncio.sleep(5)
+            ses_dosyasi = await anyio.to_thread.run_sync(genai.get_file, ses_dosyasi.name)
 
         print()  # Satır sonu için
         logging.info(f"Ses işleme tamamlandı. Final durumu: {ses_dosyasi.state.name}")
@@ -82,7 +106,7 @@ def _ses_transkript_logic(ses_kaynagi: str, cikti_tipi: str = "transkript", hede
             logging.error("Ses işleme zaman aşımına uğradı")
             return json.dumps({"durum": "Hata", "mesaj": "Ses işleme çok uzun sürdü. Daha küçük bir dosya deneyin."}, ensure_ascii=False)
 
-        # AI transkripsiyon ve analiz - çıktı tipine göre farklı promptlar
+        # AI transkripsiyon ve analiz (asenkron)
         try:
             logging.info(f"Ses başarıyla işlendi. AI transkripsiyon başlıyor... Tip: {cikti_tipi}, Hedef dil: {hedef_dil}")
             if not GEMINI_API_KEY:
@@ -159,9 +183,9 @@ def _ses_transkript_logic(ses_kaynagi: str, cikti_tipi: str = "transkript", hede
                 - Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
                 """
             
-            # AI'dan yanıt al
+            # AI'dan yanıt al (asenkron)
             logging.debug("Gemini API'ye istek gönderiliyor...")
-            response = model.generate_content([ses_dosyasi, prompt])
+            response = await anyio.to_thread.run_sync(model.generate_content, [ses_dosyasi, prompt])
             logging.debug("Gemini API yanıtı alındı")
             
             if not response.text:
@@ -188,10 +212,10 @@ def _ses_transkript_logic(ses_kaynagi: str, cikti_tipi: str = "transkript", hede
             logging.error(f"AI transkripsiyon hatası: {str(ai_error)}")
             return json.dumps({"durum": "Hata", "mesaj": f"AI transkripsiyon oluşturulamadı: {str(ai_error)}"}, ensure_ascii=False)
 
-        # Temizlik
+        # Temizlik (asenkron)
         try:
             logging.info("Yüklenen ses dosyası API'den siliniyor...")
-            genai.delete_file(ses_dosyasi.name)
+            await anyio.to_thread.run_sync(genai.delete_file, ses_dosyasi.name)
             logging.info(f"Yüklenen dosya ({ses_dosyasi.name}) API'den başarıyla silindi")
         except Exception as delete_error:
             logging.warning(f"API'den dosya silme hatası: {str(delete_error)}")
@@ -204,8 +228,8 @@ def _ses_transkript_logic(ses_kaynagi: str, cikti_tipi: str = "transkript", hede
         logging.debug(f"Hata türü: {type(e).__name__}")
         return json.dumps({"durum": "Hata", "mesaj": f"Beklenmeyen bir hata oluştu: {str(e)}"}, ensure_ascii=False)
 
-
-def ses_dosyasini_transkript_et(ses_dosyasi_yolu: str, cikti_tipi: str = "ozet", hedef_dil: str = "otomatik") -> str:
+@mcp.tool(tags={"public"})
+async def ses_dosyasini_transkript_et(ses_dosyasi_yolu: str, cikti_tipi: str = "ozet", hedef_dil: str = "otomatik") -> str:
     """
     GELİŞMİŞ SES TRANSKRİPSİYON AJANI - Verilen ses dosyasını yazıya çevirir ve detaylı analiz yapar.
 
@@ -231,6 +255,7 @@ def ses_dosyasini_transkript_et(ses_dosyasi_yolu: str, cikti_tipi: str = "ozet",
         
     Desteklenen formatlar: MP3, WAV, FLAC, M4A, AAC, OGG, WebM
     """
-    logging.info("ses_dosyasini_transkript_et tool'u çağrıldı")
-    # Bu fonksiyon, asıl işi yapan logic fonksiyonunu çağırır.
-    return _ses_transkript_logic(ses_kaynagi=ses_dosyasi_yolu, cikti_tipi=cikti_tipi, hedef_dil=hedef_dil)
+    logging.info("ses_dosyasini_transkript_et async tool'u çağrıldı")
+    # Bu fonksiyon, asıl işi yapan asenkron logic fonksiyonunu çağırır.
+    return await _ses_transkript_logic(ses_kaynagi=ses_dosyasi_yolu, cikti_tipi=cikti_tipi, hedef_dil=hedef_dil)
+

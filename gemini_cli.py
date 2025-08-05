@@ -126,7 +126,6 @@ KRİTİK KURALLAR:
     
     # İlk hoşgeldin mesajı
     print("Eğitim Asistanı: Merhaba! Size nasıl yardımcı olabilirim? ")
-    print("Örnek: 'Bu kriterlere uygun daire göster' veya 'Fiyat analizi yap'")
     print("-" * 62)
     
     while True:

@@ -1,36 +1,55 @@
 import os
 import json
+import asyncio  # Asenkron operasyonlar için temel kütüphane
 import time
+import anyio
 import logging
 import requests
 import google.generativeai as genai
 from app.config import GEMINI_API_KEY
+from app.server import mcp
+from dotenv import load_dotenv
 
-def search_web(query, max_results=5):
-    """Google Custom Search API ile web araması yap"""
+load_dotenv()
+
+# Ortak klasör yolu
+SHARED_UPLOADS_DIR = r'C:\mcpler\education_mcp\shared_uploads'
+
+
+async def search_web(query, max_results=5):
+    """Google Custom Search API ile web araması yap (asenkron)"""
     try:
         # Google Custom Search API ayarları
-        GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-        GOOGLE_CSE_ID = os.getenv("GEMINI_API_KEY")
+        GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+        GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")  # Custom Search Engine ID
         
         if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
             logging.warning("Google API anahtarları bulunamadı, web araması yapılamıyor")
             return []
         
+        # API anahtarlarının geçerli olup olmadığını kontrol et
+        if GOOGLE_API_KEY == "your_google_api_key_here" or GOOGLE_CSE_ID == "your_custom_search_engine_id_here":
+            logging.warning("Google API anahtarları varsayılan değerlerde, web araması yapılamıyor")
+            return []
+        
         url = "https://www.googleapis.com/customsearch/v1"
         params = {
             'key': GOOGLE_API_KEY,
-            'cx': GOOGLE_CSE_ID,
+            'cx': GOOGLE_CSE_ID,  # Custom Search Engine ID
             'q': query,
             'num': max_results,
             'dateRestrict': 'm1',  # Son 1 ay
             'sort': 'date'  # Tarihe göre sırala
         }
         
-        response = requests.get(url, params=params)
-        response.raise_for_status()
         
-        data = response.json()
+        # requests.get'i anyio ile asenkron çalıştır
+        def make_request():
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        
+        data = await anyio.to_thread.run_sync(make_request)
         results = []
         
         if 'items' in data:
@@ -45,13 +64,16 @@ def search_web(query, max_results=5):
         logging.info(f"Web araması tamamlandı: {len(results)} sonuç bulundu")
         return results
         
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Web arama network hatası: {str(e)}")
+        return []
     except Exception as e:
-        logging.error(f"Web arama hatası: {str(e)}")
+        logging.error(f"Web arama genel hatası: {str(e)}")
         return []
 
-def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tipi: str = "karisik", web_arama: bool = True) -> str:
-    """Verilen konuda soru oluşturmanın çekirdek mantığını içeren fonksiyon."""
-    logging.info("Soru oluşturma işlemi başlatıldı")
+async def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tipi: str = "karisik", web_arama: bool = False) -> str:
+    """Verilen konuda soru oluşturmanın çekirdek mantığını içeren asenkron fonksiyon."""
+    logging.info("Asenkron soru oluşturma işlemi başlatıldı")
     logging.debug(f"Gelen parametreler - konu: {konu}, soru_sayisi: {soru_sayisi}, zorluk: {zorluk}, soru_tipi: {soru_tipi}, web_arama: {web_arama}")
     
     if not konu or konu.strip() == "":
@@ -73,11 +95,11 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
         return json.dumps({"durum": "Hata", "mesaj": f"Soru tipi şunlardan biri olmalıdır: {', '.join(soru_tipleri)}"}, ensure_ascii=False)
 
     try:
-        # Web araması yap
+        # Web araması yap (asenkron)
         web_bilgileri = ""
         if web_arama:
             logging.info(f"'{konu}' konusunda web araması yapılıyor...")
-            search_results = search_web(f"{konu} güncel bilgiler 2024", max_results=3)
+            search_results = await search_web(f"{konu} güncel bilgiler 2024", max_results=3)
             
             if search_results:
                 web_bilgileri = "\n\nGÜNCEL WEB BİLGİLERİ:\n"
@@ -91,6 +113,10 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
                 logging.info("Web araması başarılı, güncel bilgiler eklendi")
             else:
                 logging.warning("Web araması sonuç vermedi, sadece model bilgileri kullanılacak")
+                web_bilgileri = "\n\nNot: Web araması yapılamadı, sadece model bilgileri kullanılacak."
+        else:
+            logging.info("Web araması devre dışı, sadece model bilgileri kullanılacak")
+            web_bilgileri = "\n\nNot: Web araması devre dışı, sadece model bilgileri kullanılacak."
         
         logging.info(f"AI'dan {konu} konusunda {soru_sayisi} adet {zorluk} seviyesinde {soru_tipi} türünde sorular isteniyor...")
         if not GEMINI_API_KEY:
@@ -205,8 +231,9 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
         Lütfen yanıtını sadece JSON formatında ver, başka metin ekleme.
         """
         
-        logging.info("AI'dan sorular isteniyor...")
-        response = model.generate_content(prompt)
+        logging.info("AI'dan sorular isteniyor (asenkron)...")
+        # model.generate_content anyio ile asenkron çalıştırılır
+        response = await anyio.to_thread.run_sync(model.generate_content, prompt)
         logging.info("AI soruları başarıyla oluşturdu")
         logging.debug(f"Cevap uzunluğu: {len(response.text)} karakter")
         
@@ -268,10 +295,11 @@ def _soru_olustur_logic(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", s
         logging.debug(f"Hata türü: {type(e).__name__}")
         return json.dumps({"durum": "Hata", "mesaj": f"Beklenmeyen bir hata oluştu: {str(e)}"}, ensure_ascii=False)
 
-def soru_olustur(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tipi: str = "karisik", web_arama: bool = True) -> str:
+@mcp.tool(tags={"public"})
+async def soru_olustur(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tipi: str = "karisik", web_arama: bool = False) -> str:
     """
     EĞİTİM SORU OLUŞTURMA AJANI - Verilen konuda akademik standartlarda sorular oluşturur ve detaylı cevap anahtarları sağlar.
-    Web araması özelliği ile güncel bilgileri kullanır.
+    Web araması özelliği ile güncel bilgileri kullanır. kullanıcının istediği zaman web araması yapılabilir.
 
     Kullanıcı "bu konu hakkında soru sor", "test hazırla", "sınav soruları oluştur" dediğinde bu aracı kullan.
 
@@ -296,7 +324,7 @@ def soru_olustur(konu: str, soru_sayisi: int = 5, zorluk: str = "orta", soru_tip
         - Web arama sonuçları ve kullanılan kaynaklar
         - Güncel bilgiler ve son gelişmeler
     """
-    logging.info("soru_olustur tool'u çağrıldı")
-    # Bu fonksiyon, asıl işi yapan logic fonksiyonunu çağırır.
-    return _soru_olustur_logic(konu=konu, soru_sayisi=soru_sayisi, zorluk=zorluk, soru_tipi=soru_tipi, web_arama=web_arama)
+    logging.info("soru_olustur async tool'u çağrıldı")
+    # Bu fonksiyon, asıl işi yapan asenkron logic fonksiyonunu çağırır.
+    return await _soru_olustur_logic(konu=konu, soru_sayisi=soru_sayisi, zorluk=zorluk, soru_tipi=soru_tipi, web_arama=web_arama)
 
